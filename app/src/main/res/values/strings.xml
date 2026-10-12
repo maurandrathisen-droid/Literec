@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">LiteRec</string>
+    <string name="channel_name">Screen Recorder</string>
+    <string name="channel_desc">Active recording controls and status</string>
+    <string name="notification_title">LiteRec is recording</string>
+    <string name="notification_content">Screen capture active. Tap Stop when finished.</string>
+    <string name="action_stop">Stop</string>
+    <string name="tip_low_end">Use 480p + 15fps + Low bitrate on weak tablets.</string>
+</resources>
