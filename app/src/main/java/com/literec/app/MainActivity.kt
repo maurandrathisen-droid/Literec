@@ -30,7 +30,6 @@ class MainActivity : ComponentActivity() {
     private var currentConfig by mutableStateOf(RecordConfig())
     private var lastSavedPath by mutableStateOf<String?>(null)
 
-    // Media projection consent launcher
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -50,20 +49,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Mic runtime permission launcher
     private val micPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (!isGranted) {
-            Toast.makeText(this, "Microphone permission denied. Recording video-only.", Toast.LENGTH_SHORT).show()
-            // Auto update config to mic disabled so user knows
+            Toast.makeText(
+                this,
+                "Internal audio needs this Android permission. The microphone itself is not recorded.",
+                Toast.LENGTH_LONG
+            ).show()
             currentConfig = currentConfig.copy(micAudio = false)
             prefs.saveConfig(currentConfig)
         }
         launchMediaProjectionConsent()
     }
 
-    // Notification permission launcher (Android 13+)
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ ->
@@ -114,7 +114,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecordingFlow() {
-        // Step 1: Check notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasNotifPermission = ContextCompat.checkSelfPermission(
                 this,

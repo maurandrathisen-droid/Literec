@@ -249,13 +249,13 @@ fun MainScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Microphone Audio",
+                            text = "Internal audio",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
                             color = TextPrimary
                         )
                         Text(
-                            text = "AAC 64 kbps mono mix",
+                            text = "Game/app sound only. Android still shows a Microphone prompt — the mic is not recorded.",
                             fontSize = 12.sp,
                             color = TextSecondary
                         )
