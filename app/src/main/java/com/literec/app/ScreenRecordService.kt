@@ -91,7 +91,11 @@ class ScreenRecordService : Service() {
     private var audioSampleRate = 44100
     private var audioChannels = 1
     private var audioPcmFrames = 0L
+    private var audioOriginUs = -1L
+    private var pendingPcm = ByteArray(0)
     private var videoPtsOffset = -1L
+    private var videoOriginUs = 0L
+    private var videoUnitScale = 1L
     private var lastVideoPts = -1L
     private var lastAudioPts = -1L
 
@@ -275,8 +279,13 @@ class ScreenRecordService : Service() {
                 audioChannels
             )
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 96_000)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+            format.setInteger(
+                MediaFormat.KEY_CHANNEL_MASK,
+                if (audioChannels == 2) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
+            )
+            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
@@ -302,8 +311,8 @@ class ScreenRecordService : Service() {
             intArrayOf(AudioAttributes.USAGE_MEDIA),
             intArrayOf(AudioAttributes.USAGE_GAME)
         )
-        val rates = intArrayOf(48000, 44100)
-        val channels = intArrayOf(AudioFormat.CHANNEL_IN_STEREO, AudioFormat.CHANNEL_IN_MONO)
+        val rates = intArrayOf(44100, 48000)
+        val channels = intArrayOf(AudioFormat.CHANNEL_IN_MONO, AudioFormat.CHANNEL_IN_STEREO)
         for (usages in usageSets) {
             val cfg = try {
                 val b = AudioPlaybackCaptureConfiguration.Builder(projection)
@@ -325,12 +334,12 @@ class ScreenRecordService : Service() {
                                     .setChannelMask(mask)
                                     .build()
                             )
-                            .setBufferSizeInBytes(min * 2)
+                            .setBufferSizeInBytes(min * 4)
                             .setAudioPlaybackCaptureConfig(cfg)
                             .build()
-                        if (rec.state == AudioRecord.STATE_INITIALIZED) {
-                            audioSampleRate = rate
-                            audioChannels = if (mask == AudioFormat.CHANNEL_IN_STEREO) 2 else 1
+                        if (rec.state == AudioRecord.STATE_INITIALIZED && rec.sampleRate > 0 && rec.channelCount > 0) {
+                            audioSampleRate = rec.sampleRate
+                            audioChannels = rec.channelCount
                             return rec
                         }
                         rec.release()
@@ -377,17 +386,43 @@ class ScreenRecordService : Service() {
     }
 
     private fun queueAudioPcm(codec: MediaCodec, buf: ByteArray, size: Int) {
-        var index = codec.dequeueInputBuffer(20_000)
-        if (index < 0) index = codec.dequeueInputBuffer(80_000)
-        if (index < 0) return
-        val input = codec.getInputBuffer(index) ?: return
-        input.clear()
-        val toWrite = size.coerceAtMost(input.capacity())
-        input.put(buf, 0, toWrite)
-        val frames = toWrite / (2 * audioChannels.coerceAtLeast(1))
-        val pts = audioPcmFrames * 1_000_000L / audioSampleRate.coerceAtLeast(1)
-        audioPcmFrames += frames
-        codec.queueInputBuffer(index, 0, toWrite, pts, 0)
+        val frameBytes = (2 * audioChannels).coerceAtLeast(2)
+        var incoming = if (pendingPcm.isEmpty()) buf.copyOf(size) else pendingPcm + buf.copyOf(size)
+        pendingPcm = ByteArray(0)
+        val usable = incoming.size - (incoming.size % frameBytes)
+        if (usable < incoming.size) {
+            pendingPcm = incoming.copyOfRange(usable, incoming.size)
+        }
+        if (usable <= 0) return
+        var offset = 0
+        while (offset < usable) {
+            val index = codec.dequeueInputBuffer(100_000)
+            if (index < 0) {
+                pendingPcm = incoming.copyOfRange(offset, usable) + pendingPcm
+                return
+            }
+            val input = codec.getInputBuffer(index)
+            if (input == null) continue
+            input.clear()
+            var n = (usable - offset).coerceAtMost(input.capacity())
+            n -= n % frameBytes
+            if (n <= 0) {
+                pendingPcm = incoming.copyOfRange(offset, usable) + pendingPcm
+                return
+            }
+            input.put(incoming, offset, n)
+            val frames = n / frameBytes
+            val rate = audioSampleRate.coerceAtLeast(1)
+            if (audioOriginUs < 0) {
+                val elapsedUs = (System.nanoTime() - baseNs) / 1000L
+                val chunkUs = frames * 1_000_000L / rate
+                audioOriginUs = (elapsedUs - chunkUs).coerceAtLeast(0)
+            }
+            val pts = audioOriginUs + audioPcmFrames * 1_000_000L / rate
+            audioPcmFrames += frames
+            codec.queueInputBuffer(index, 0, n, pts, 0)
+            offset += n
+        }
     }
 
     private fun queueAudioEos(codec: MediaCodec) {
@@ -506,8 +541,18 @@ class ScreenRecordService : Service() {
     }
 
     private fun rebaseVideoPts(raw: Long): Long {
-        if (videoPtsOffset < 0) videoPtsOffset = raw.coerceAtLeast(0)
-        return (raw - videoPtsOffset).coerceAtLeast(0)
+        if (videoPtsOffset < 0) {
+            videoPtsOffset = raw.coerceAtLeast(0)
+            videoOriginUs = ((System.nanoTime() - baseNs) / 1000L).coerceAtLeast(0)
+            return videoOriginUs
+        }
+        var delta = raw - videoPtsOffset
+        if (videoUnitScale == 1L && delta > 2_000_000L) {
+            videoUnitScale = 1000L
+        }
+        if (delta < 0) delta = 0
+        delta /= videoUnitScale
+        return videoOriginUs + delta
     }
 
     private fun abandonAudioIfLateLocked() {
